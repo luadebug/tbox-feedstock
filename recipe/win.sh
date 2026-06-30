@@ -85,6 +85,13 @@ for sym in tb_exit tb_md5_init tb_charset_conv_data; do
     fi
 done
 
+# The mingw link emits a GNU-style import library (tbox.dll.a). Generate a
+# proper MSVC-style COFF import library (tbox.lib) from the same def instead,
+# so the package ships tbox.dll + tbox.lib with no .dll.a. llvm-dlltool honors
+# the def's DATA entries, so data exports import as data rather than thunks.
+llvm-dlltool -m i386:x86-64 -d "${DEF_FILE}" -D tbox.dll -l "${BUILD_DIR}/tbox.lib"
+llvm-nm "${BUILD_DIR}/tbox.lib" | grep -q '__imp_tb_exit'
+
 install -Dm755 "${BUILD_DIR}/tbox.dll" "${PREFIX}/bin/tbox.dll"
 install -Dm644 "${BUILD_DIR}/tbox.lib" "${PREFIX}/lib/tbox.lib"
 
