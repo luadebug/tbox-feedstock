@@ -65,11 +65,24 @@ grep -qE '^tb_charset_conv_data( DATA)?$' "${DEF_FILE}"
 
 sed -i "s|^tbox_shflags=|tbox_shflags= -Wl,/def:${DEF_FILE} |" Makefile
 touch src/tbox/tbox.c
-make tbox -j"${CPU_COUNT:-1}"
+# MSYS2 rewrites leading-slash arguments as Windows paths, which mangles the
+# "/def:" linker flag into a bogus path — lld-link then links without it and
+# silently produces a DLL with no exports. Disable that conversion for the
+# relink (only the def flag uses a leading slash; object paths are relative).
+MSYS2_ARG_CONV_EXCL='*' make tbox -j"${CPU_COUNT:-1}"
 
-llvm-readobj --coff-exports "${BUILD_DIR}/tbox.dll" | grep -q 'Name: tb_exit'
-llvm-readobj --coff-exports "${BUILD_DIR}/tbox.dll" | grep -q 'Name: tb_md5_init'
-llvm-readobj --coff-exports "${BUILD_DIR}/tbox.dll" | grep -q 'Name: tb_charset_conv_data'
+# Verify the relinked DLL actually exports the symbols; dump diagnostics on
+# failure so a regression here is debuggable from the CI log alone.
+for sym in tb_exit tb_md5_init tb_charset_conv_data; do
+    if ! llvm-readobj --coff-exports "${BUILD_DIR}/tbox.dll" | grep -qE "Name: ${sym}$"; then
+        echo "ERROR: '${sym}' is not exported from tbox.dll after relink" >&2
+        echo "----- ${DEF_FILE} (head) -----" >&2
+        head -n 20 "${DEF_FILE}" >&2
+        echo "----- tbox.dll exports (head) -----" >&2
+        llvm-readobj --coff-exports "${BUILD_DIR}/tbox.dll" 2>&1 | head -n 40 >&2
+        exit 1
+    fi
+done
 
 install -Dm755 "${BUILD_DIR}/tbox.dll" "${PREFIX}/bin/tbox.dll"
 install -Dm644 "${BUILD_DIR}/tbox.lib" "${PREFIX}/lib/tbox.lib"
