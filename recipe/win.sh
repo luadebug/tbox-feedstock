@@ -63,13 +63,14 @@ grep -qE '^tb_exit( DATA)?$' "${DEF_FILE}"
 grep -qE '^tb_md5_init( DATA)?$' "${DEF_FILE}"
 grep -qE '^tb_charset_conv_data( DATA)?$' "${DEF_FILE}"
 
-sed -i "s|^tbox_shflags=|tbox_shflags= -Wl,/def:${DEF_FILE} |" Makefile
+# xmake's mingw platform links through GNU-style lld (ld.lld), which does not
+# understand the MSVC "/def:" flag. Pass the module-definition file as a plain
+# positional linker input instead — in GNU/mingw mode lld reads its EXPORTS
+# (DATA entries included) and treats it as the authoritative export list,
+# independent of the linker's auto-export defaults.
+sed -i "s|^tbox_shflags=|tbox_shflags= ${DEF_FILE} |" Makefile
 touch src/tbox/tbox.c
-# MSYS2 rewrites leading-slash arguments as Windows paths, which mangles the
-# "/def:" linker flag into a bogus path — lld-link then links without it and
-# silently produces a DLL with no exports. Disable that conversion for the
-# relink (only the def flag uses a leading slash; object paths are relative).
-MSYS2_ARG_CONV_EXCL='*' make tbox -j"${CPU_COUNT:-1}"
+make tbox -j"${CPU_COUNT:-1}"
 
 # Verify the relinked DLL actually exports the symbols; dump diagnostics on
 # failure so a regression here is debuggable from the CI log alone.
