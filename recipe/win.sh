@@ -42,3 +42,5 @@ install -Dm644 "${BUILD_DIR}/tbox.lib" "${PREFIX}/lib/tbox.lib"
 
 mkdir -p "${PREFIX}/include"
 cp -r src/tbox "${PREFIX}/include/"
+
+install -Dm644 "${BUILD_DIR}/tbox.config.h" "${PREFIX}/Library/include/tbox/tbox.config.h"
