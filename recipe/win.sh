@@ -37,63 +37,60 @@ make tbox -j"${CPU_COUNT:-1}"
 
 BUILD_DIR="build/mingw/x86_64/release"
 OBJ_DIR="build/.objs/tbox/mingw/x86_64/release"
-DEF_FILE="${BUILD_DIR}/tbox.def"
+RSP_FILE="${BUILD_DIR}/exports.rsp"
 
-# The legacy configure/gmake generator does not apply the export-all rule from
-# TBox's xmake.lua, producing a DLL with no exported symbols. Generate the
-# module definition file from the compiled objects and relink the DLL.
+# The legacy configure/gmake generator does not apply TBox xmake's export-all
+# rule, so the first link yields a DLL with no exported symbols. The linker is
+# MSVC-style lld-link (despite the "mingw" platform name), so re-link with an
+# explicit /EXPORT: directive per external tb_* symbol scraped from the objects,
+# plus /implib to emit the COFF import library (tbox.lib). TBox has no
+# public/internal naming convention, so every external tb_* symbol is exported,
+# matching the export-all rule.
 #
-# nm type letters map to .def entries as follows:
-#   T, W           -> code symbol, exported by name
-#   D, B, R, C, V  -> data symbol, exported with the DATA keyword so the import
-#                     library references the variable itself rather than a thunk
-# TBox has no public/internal naming convention, so every external tb_* symbol
-# is exported — this matches upstream's xmake export-all rule.
+# Why /EXPORT: in a response file rather than a "/def:" flag:
+#   * /EXPORT: entries are GC roots, so /OPT:REF (on by default in release) does
+#     not dead-strip internally-unreferenced public functions (e.g. tb_md5_init,
+#     which nothing inside tbox calls) before they can be exported — a bare def
+#     dropped exactly those symbols.
+#   * a response file's contents bypass the shell/MSYS leading-slash argv path
+#     conversion that silently mangled a "/def:" flag on the command line.
+#
+# nm type letters: T/W -> code export; D/B/R/C/V -> data export (",DATA" so the
+# import library references the variable itself rather than a code thunk).
 {
-    echo "EXPORTS"
     find "${OBJ_DIR}" -name '*.obj' -exec llvm-nm --defined-only --extern-only {} + \
         | awk '$3 ~ /^tb_/ {
-                   if ($2 == "T" || $2 == "W") print $3;
-                   else if ($2 ~ /^[DBRCV]$/) print $3 " DATA";
+                   if ($2 == "T" || $2 == "W") print "/EXPORT:" $3;
+                   else if ($2 ~ /^[DBRCV]$/) print "/EXPORT:" $3 ",DATA";
                }' \
         | sort -u
-} > "${DEF_FILE}"
+    echo "/implib:${BUILD_DIR}/tbox.lib"
+} > "${RSP_FILE}"
 
-grep -qE '^tb_exit( DATA)?$' "${DEF_FILE}"
-grep -qE '^tb_md5_init( DATA)?$' "${DEF_FILE}"
-grep -qE '^tb_charset_conv_data( DATA)?$' "${DEF_FILE}"
+grep -qE '^/EXPORT:tb_exit(,DATA)?$' "${RSP_FILE}"
+grep -qE '^/EXPORT:tb_md5_init(,DATA)?$' "${RSP_FILE}"
+grep -qE '^/EXPORT:tb_charset_conv_data(,DATA)?$' "${RSP_FILE}"
 
-# The linker is MSVC-style lld-link (despite the "mingw" platform name), so the
-# module-definition file must be passed with the "/def:" flag — a positional
-# .def is rejected as "unknown file type". Passing "/def:..." directly on the
-# command line is unreliable here: the leading-slash argument is mangled before
-# lld-link sees it, so the DLL links with no exports and no error. Put the flag
-# in a linker response file instead (its contents bypass shell/argv path
-# conversion) and reference it with the slash-free "@file" form.
-RSP_FILE="${BUILD_DIR}/exports.rsp"
-printf '/def:%s\n' "${DEF_FILE}" > "${RSP_FILE}"
 sed -i "s|^tbox_shflags=|tbox_shflags= -Wl,@${RSP_FILE} |" Makefile
 touch src/tbox/tbox.c
 make tbox -j"${CPU_COUNT:-1}"
 
-# Verify the relinked DLL actually exports the symbols; dump diagnostics on
-# failure so a regression here is debuggable from the CI log alone.
-for sym in tb_exit tb_md5_init tb_charset_conv_data; do
-    if ! llvm-readobj --coff-exports "${BUILD_DIR}/tbox.dll" | grep -qE "Name: ${sym}$"; then
-        echo "ERROR: '${sym}' is not exported from tbox.dll after relink" >&2
-        echo "----- ${DEF_FILE} (head) -----" >&2
-        head -n 20 "${DEF_FILE}" >&2
-        echo "----- tbox.dll exports (head) -----" >&2
-        llvm-readobj --coff-exports "${BUILD_DIR}/tbox.dll" 2>&1 | head -n 40 >&2
-        exit 1
-    fi
-done
+# Verify every requested symbol actually landed in the DLL export table; on
+# failure list exactly what is missing so a regression is debuggable from the
+# CI log alone.
+llvm-readobj --coff-exports "${BUILD_DIR}/tbox.dll" \
+    | sed -n 's/^[[:space:]]*Name: //p' | sort -u > "${BUILD_DIR}/exports.actual"
+sed -n 's|^/EXPORT:||p' "${RSP_FILE}" | sed 's/,DATA$//' | sort -u > "${BUILD_DIR}/exports.wanted"
+missing="$(comm -23 "${BUILD_DIR}/exports.wanted" "${BUILD_DIR}/exports.actual")"
+if [ -n "${missing}" ]; then
+    echo "ERROR: $(printf '%s\n' "${missing}" | grep -c .) requested symbol(s) not exported from tbox.dll:" >&2
+    printf '%s\n' "${missing}" | head -n 40 >&2
+    exit 1
+fi
 
-# Generate the import library explicitly from the def so the package ships a
-# COFF tbox.lib (no .dll.a) regardless of the driver's default implib name and
-# location. llvm-dlltool honors the def's DATA entries, so data exports import
-# as data (__imp_ only) rather than through a code thunk.
-llvm-dlltool -m i386:x86-64 -d "${DEF_FILE}" -D tbox.dll -l "${BUILD_DIR}/tbox.lib"
+# lld-link wrote the import library via /implib; sanity-check it exists and is a
+# real COFF import library (no .dll.a is shipped).
+test -f "${BUILD_DIR}/tbox.lib"
 llvm-nm "${BUILD_DIR}/tbox.lib" | grep -q '__imp_tb_exit'
 
 install -Dm755 "${BUILD_DIR}/tbox.dll" "${PREFIX}/bin/tbox.dll"
