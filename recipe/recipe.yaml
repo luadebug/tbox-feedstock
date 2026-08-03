@@ -1,5 +1,5 @@
 context:
-  version: "1.8.1"
+  version: "1.8.2"
 
 package:
   name: tbox
@@ -7,7 +7,7 @@ package:
 
 source:
   url: https://github.com/tboox/tbox/archive/refs/tags/v${{ version }}.tar.gz
-  sha256: 48284c1f1f6e4e74ce1b4d2447c3141fdfdd3a20ef1cb30fc2f1021149227fdb
+  sha256: 8601bd1443ad3e3eb998406a71c3896f8563ed1aeb94a9ccf8c17543742d508e
   patches:
     - 0001-honor-macosx-deployment-target.patch
 
